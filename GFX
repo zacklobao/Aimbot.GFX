@@ -1,0 +1,1223 @@
+--[[
+    ⚡ GFX OPTIMIZER v2.1.1 - DELTA EXECUTOR
+    Otimização Gráfica + ESP + Aimbot PRO (Mobile-Fixed)
+]]
+
+-- ============================================================
+-- SERVIÇOS
+-- ============================================================
+local Lighting      = game:GetService("Lighting")
+local Camera        = workspace.CurrentCamera
+local RunService    = game:GetService("RunService")
+local Stats         = game:GetService("Stats")
+local Players       = game:GetService("Players")
+local UserInput     = game:GetService("UserInputService")
+local TweenService  = game:GetService("TweenService")
+local LocalPlayer   = Players.LocalPlayer
+local Mouse         = LocalPlayer:GetMouse()
+
+local hasGetGC   = typeof(getgc) == "function"
+local hasSetFPS  = typeof(setfpscap) == "function"
+local hasGetFPS  = typeof(getfps) == "function"
+local hasGethui  = typeof(gethui) == "function"
+
+local isMobile = UserInput.TouchEnabled and not UserInput.KeyboardEnabled
+
+print("═══════════════════════════════════════")
+print("  ⚡ GFX OPTIMIZER v2.1.1")
+print("  Mobile:", isMobile, "| APIs:", hasGetGC, hasSetFPS)
+print("═══════════════════════════════════════")
+
+-- ============================================================
+-- TEMA
+-- ============================================================
+local Theme = {
+    Background = Color3.fromRGB(15, 15, 20),
+    Surface = Color3.fromRGB(25, 25, 35),
+    SurfaceLight = Color3.fromRGB(35, 35, 50),
+    Primary = Color3.fromRGB(88, 101, 242),
+    PrimaryDark = Color3.fromRGB(69, 79, 191),
+    Success = Color3.fromRGB(87, 242, 135),
+    Warning = Color3.fromRGB(254, 231, 92),
+    Danger = Color3.fromRGB(237, 66, 69),
+    Text = Color3.fromRGB(255, 255, 255),
+    TextDim = Color3.fromRGB(150, 150, 170),
+    Border = Color3.fromRGB(40, 40, 60)
+}
+
+-- ============================================================
+-- UTILITÁRIOS
+-- ============================================================
+local function Create(className, props)
+    local inst = Instance.new(className)
+    for k, v in pairs(props or {}) do
+        pcall(function() inst[k] = v end)
+    end
+    return inst
+end
+
+local function Tween(inst, info, props)
+    pcall(function() TweenService:Create(inst, info, props):Play() end)
+end
+
+-- ✅ NOVO: helper de input unificado (mouse + touch)
+local function isPress(input)
+    return input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch
+end
+
+local function isMove(input)
+    return input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch
+end
+
+-- ============================================================
+-- BACKUP GLOBAL
+-- ============================================================
+local originalSettings = nil
+local disabledCache    = {}
+local hiddenCache      = {}
+local isOptimizing     = false
+
+local function CreateBackup()
+    if originalSettings then return originalSettings end
+    originalSettings = {
+        Lighting = {
+            GlobalShadows = Lighting.GlobalShadows,
+            FogEnd = Lighting.FogEnd,
+            Ambient = Lighting.Ambient,
+            OutdoorAmbient = Lighting.OutdoorAmbient,
+            Brightness = Lighting.Brightness,
+            ClockTime = Lighting.ClockTime,
+            ShadowSoftness = Lighting.ShadowSoftness,
+            EnvironmentDiffuseScale = Lighting.EnvironmentDiffuseScale,
+            EnvironmentSpecularScale = Lighting.EnvironmentSpecularScale
+        },
+        Camera = {
+            MaxZoomDistance = Camera.MaxZoomDistance,
+            FieldOfView = Camera.FieldOfView
+        },
+        Quality = settings().Rendering.QualityLevel,
+        Effects = {},
+        Terrain = {
+            Decoration = workspace.Terrain.Decoration,
+            WaterWaveSize = workspace.Terrain.WaterWaveSize,
+            WaterWaveSpeed = workspace.Terrain.WaterWaveSpeed
+        }
+    }
+    for _, effect in ipairs(Lighting:GetChildren()) do
+        if effect:IsA("PostEffect") then
+            originalSettings.Effects[effect] = effect.Enabled
+        end
+    end
+    return originalSettings
+end
+
+local function RestoreBackup()
+    if not originalSettings then return end
+    for prop, val in pairs(originalSettings.Lighting) do
+        pcall(function() Lighting[prop] = val end)
+    end
+    for prop, val in pairs(originalSettings.Camera) do
+        pcall(function() Camera[prop] = val end)
+    end
+    pcall(function() settings().Rendering.QualityLevel = originalSettings.Quality end)
+    for effect, enabled in pairs(originalSettings.Effects) do
+        if effect and effect.Parent then effect.Enabled = enabled end
+    end
+    for prop, val in pairs(originalSettings.Terrain) do
+        pcall(function() workspace.Terrain[prop] = val end)
+    end
+    for inst, data in pairs(disabledCache) do
+        if inst and inst.Parent then
+            pcall(function() inst.Enabled = data.original end)
+        end
+    end
+    disabledCache = {}
+    for inst, data in pairs(hiddenCache) do
+        if inst and inst.Parent then
+            for prop, val in pairs(data) do
+                pcall(function() inst[prop] = val end)
+            end
+        end
+    end
+    hiddenCache = {}
+    if hasSetFPS then pcall(function() setfpscap(240) end) end
+    isOptimizing = false
+    print("[GFX] Configurações restauradas!")
+end
+
+-- ============================================================
+-- DETECTOR INTELIGENTE
+-- ============================================================
+local DECORATIVE_KEYWORDS = {
+    "grass","foliage","bush","leaves","leaf","flower","plant","vine","decor",
+    "decoration","detail","pebble","small","tiny","clutter","cloud","smoke",
+    "sparkle","shine","glow","hint","dust","confetti","debris","rubble","moss",
+    "ivy","weed","seed","pollen","fog","shadow","ambient","trash","litter",
+    "scrap","crack","stain"
+}
+local PROTECTED_KEYWORDS = {
+    "base","baseplate","floor","ground","wall","roof","door","gate","humanoid",
+    "character","torso","head","limb","arm","leg","hitbox","collision","physics",
+    "weapon","gun","sword","vehicle","wheel","car","truck","bike","ball","goal",
+    "net","hoop","basket","spawn","checkpoint","trigger","kill","damage","core",
+    "engine","camera","light","spot","surface","spawnlocation","flag","banner"
+}
+local DECORATIVE_MATERIALS = {
+    [Enum.Material.Grass] = true,
+    [Enum.Material.LeafyGrass] = true,
+    [Enum.Material.Fabric] = true,
+    [Enum.Material.Sand] = true,
+    [Enum.Material.Snow] = true,
+    [Enum.Material.Mud] = true,
+}
+
+local function nameContains(name, list)
+    local lname = name:lower()
+    for _, kw in ipairs(list) do
+        if lname:find(kw, 1, true) then return true end
+    end
+    return false
+end
+
+local function isCharacterDescendant(inst)
+    if LocalPlayer.Character and inst:IsDescendantOf(LocalPlayer.Character) then return true end
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr.Character and inst:IsDescendantOf(plr.Character) then return true end
+    end
+    return false
+end
+
+local function IsDecorative(inst)
+    if not inst or not inst.Parent then return false end
+    if isCharacterDescendant(inst) then return false end
+    if inst == workspace.Terrain then return false end
+    if nameContains(inst.Name, PROTECTED_KEYWORDS) then return false end
+    if nameContains(inst.Name, DECORATIVE_KEYWORDS) then return true end
+    if inst:IsA("BasePart") then
+        if inst.CanCollide == false then
+            local s = inst.Size
+            local vol = s.X * s.Y * s.Z
+            if vol < 8 then return true end
+            if DECORATIVE_MATERIALS[inst.Material] and vol < 40 then return true end
+        end
+    end
+    if inst:IsA("Decal") or inst:IsA("Texture") then return true end
+    return false
+end
+
+-- ============================================================
+-- OTIMIZAÇÃO
+-- ============================================================
+local function DisableEffects(className)
+    local count = 0
+    for _, inst in ipairs(workspace:GetDescendants()) do
+        if inst:IsA(className) and (inst.Enabled ~= nil) and inst.Enabled then
+            if not disabledCache[inst] then
+                disabledCache[inst] = { original = inst.Enabled }
+            end
+            pcall(function() inst.Enabled = false end)
+            count = count + 1
+        end
+    end
+    return count
+end
+
+local function RestoreEffects(className)
+    local count = 0
+    for inst, data in pairs(disabledCache) do
+        if inst:IsA(className) and inst.Parent then
+            pcall(function() inst.Enabled = data.original end)
+            count = count + 1
+        end
+    end
+    return count
+end
+
+local function HideDecoratives(strictness)
+    local count = 0
+    for _, inst in ipairs(workspace:GetDescendants()) do
+        if inst:IsA("BasePart") and IsDecorative(inst) then
+            local s = inst.Size
+            local vol = s.X * s.Y * s.Z
+            local threshold = (strictness == 1) and 8 or (strictness == 2) and 30 or 100
+            if vol <= threshold then
+                if not hiddenCache[inst] then
+                    hiddenCache[inst] = {
+                        LocalTransparencyModifier = inst.LocalTransparencyModifier,
+                        Transparency = inst.Transparency
+                    }
+                end
+                pcall(function()
+                    inst.LocalTransparencyModifier = 1
+                    inst.Transparency = 1
+                end)
+                count = count + 1
+            end
+        end
+    end
+    return count
+end
+
+-- ✅ NOVO: esconder SurfaceAppearance (texturas PBR - pesa MUITO)
+local function HideSurfaceAppearance()
+    for _, inst in ipairs(workspace:GetDescendants()) do
+        if inst:IsA("SurfaceAppearance") then
+            if not hiddenCache[inst] then
+                hiddenCache[inst] = { Parent = inst.Parent }
+            end
+            pcall(function() inst.Parent = nil end)
+        end
+    end
+end
+
+-- ✅ NOVO: esconder Atmosphere/Clouds/Sky
+local function HideAtmospheric()
+    for _, obj in ipairs(Lighting:GetChildren()) do
+        if obj:IsA("Atmosphere") or obj:IsA("Clouds") or obj:IsA("Sky") then
+            if not hiddenCache[obj] then
+                hiddenCache[obj] = { Parent = obj.Parent }
+            end
+            pcall(function() obj.Parent = nil end)
+        end
+    end
+end
+
+-- ✅ NOVO: esconder acessórios de outros jogadores (chapéus, cabelos)
+local function HideAccessories()
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr.Character then
+            for _, item in ipairs(plr.Character:GetDescendants()) do
+                if item:IsA("Accessory") or item:IsA("Hat") or item:IsA("Shirt") 
+                   or item:IsA("Pants") or item:IsA("ShirtGraphic") then
+                    if not hiddenCache[item] then
+                        hiddenCache[item] = { Parent = item.Parent }
+                    end
+                    pcall(function() item.Parent = nil end)
+                end
+            end
+        end
+    end
+end
+
+-- ============================================================
+-- PERFIS
+-- ============================================================
+local Profiles = {
+    Leve = {
+        fps = 120, quality = 6,
+        particles = false, trails = false, post = false, shadows = false,
+        decals = false, decoratives = 1, skybox = false, terrainDecoration = false,
+        atmosphere = false, surfaceAppearance = false, accessories = false,
+        cameraFOV = 80
+    },
+    Equilibrado = {
+        fps = 90, quality = 4,
+        particles = true, trails = true, post = true, shadows = true,
+        decals = false, decoratives = 2, skybox = true, terrainDecoration = true,
+        atmosphere = true, surfaceAppearance = true, accessories = false,
+        cameraFOV = 85
+    },
+    Agressivo = {
+        fps = 60, quality = 2,
+        particles = true, trails = true, post = true, shadows = true,
+        decals = true, decoratives = 3, skybox = true, terrainDecoration = true,
+        atmosphere = true, surfaceAppearance = true, accessories = true,
+        cameraFOV = 95
+    }
+}
+
+local function ApplyProfile(profileName)
+    CreateBackup()
+    local cfg = Profiles[profileName]
+    if not cfg then return false end
+
+    if hasSetFPS and cfg.fps then pcall(function() setfpscap(cfg.fps) end) end
+    pcall(function() settings().Rendering.QualityLevel = cfg.quality end)
+
+    for _, effect in ipairs(Lighting:GetChildren()) do
+        if effect:IsA("PostEffect") then
+            if cfg.post then
+                if not disabledCache[effect] then
+                    disabledCache[effect] = { original = effect.Enabled }
+                end
+                effect.Enabled = false
+            else
+                if disabledCache[effect] then effect.Enabled = disabledCache[effect].original end
+            end
+        end
+    end
+
+    if cfg.particles then DisableEffects("ParticleEmitter") else RestoreEffects("ParticleEmitter") end
+    if cfg.trails then DisableEffects("Trail"); DisableEffects("Beam")
+    else RestoreEffects("Trail"); RestoreEffects("Beam") end
+
+    Lighting.GlobalShadows = not cfg.shadows
+    if cfg.shadows then
+        Lighting.ShadowSoftness = 0
+        Lighting.FogEnd = 350
+        pcall(function()
+            Lighting.EnvironmentDiffuseScale = 0
+            Lighting.EnvironmentSpecularScale = 0
+        end)
+    end
+
+    if cfg.decals then DisableEffects("Decal"); DisableEffects("Texture")
+    else RestoreEffects("Decal"); RestoreEffects("Texture") end
+
+    if cfg.skybox then HideAtmospheric() end
+    if cfg.atmosphere then HideAtmospheric() end
+    if cfg.surfaceAppearance then HideSurfaceAppearance() end
+    if cfg.accessories then HideAccessories() end
+
+    if cfg.terrainDecoration then
+        pcall(function()
+            workspace.Terrain.Decoration = false
+            workspace.Terrain.WaterWaveSize = 0
+            workspace.Terrain.WaterWaveSpeed = 0
+        end)
+    end
+
+    if cfg.decoratives and cfg.decoratives > 0 then
+        HideDecoratives(cfg.decoratives)
+    end
+
+    -- ✅ Reduzir FOV da câmera melhora FPS em mobile
+    if cfg.cameraFOV then
+        pcall(function() Camera.FieldOfView = cfg.cameraFOV end)
+    end
+
+    isOptimizing = true
+    print("[GFX] Perfil aplicado:", profileName)
+    return true
+end
+
+local function StartContinuousOptimization(profileName)
+    isOptimizing = true
+    task.spawn(function()
+        while isOptimizing do
+            local count = 0
+            count = count + DisableEffects("ParticleEmitter")
+            count = count + DisableEffects("Trail")
+            count = count + DisableEffects("Beam")
+            local cfg = Profiles[profileName]
+            if cfg then
+                if cfg.decoratives > 0 then count = count + HideDecoratives(cfg.decoratives) end
+                if cfg.surfaceAppearance then HideSurfaceAppearance() end
+                if cfg.accessories then HideAccessories() end
+            end
+            task.wait(4)
+        end
+    end)
+end
+
+-- ============================================================
+-- ESP
+-- ============================================================
+local ESPConfig = {
+    Enabled = false, ShowBox = true, ShowHealth = true, ShowName = true,
+    ShowDistance = true, ShowTracer = false, TeamCheck = true, MaxDistance = 1500,
+    BoxColor = Color3.fromRGB(255, 255, 255), TeamColor = true,
+    TracerColor = Color3.fromRGB(255, 255, 255)
+}
+
+local ESPFolder
+local ESPObjects = {}
+
+local function createESPForPlayer(plr)
+    if plr == LocalPlayer then return end
+    local box = Create("Frame", { Name = "ESPBox", BackgroundTransparency = 1, BorderSizePixel = 0, Visible = false, Parent = ESPFolder })
+    Create("UIStroke", { Color = ESPConfig.BoxColor, Thickness = 1.5, Parent = box })
+    local healthBg = Create("Frame", { Name = "HealthBG", BackgroundColor3 = Color3.fromRGB(0,0,0), BorderSizePixel = 0, Parent = ESPFolder })
+    local healthFill = Create("Frame", { Name = "HealthFill", BackgroundColor3 = Color3.fromRGB(0,255,0), BorderSizePixel = 0, Size = UDim2.new(1,0,1,0), Parent = healthBg })
+    local nameLabel = Create("TextLabel", { Name = "NameLabel", BackgroundTransparency = 1, TextColor3 = Color3.fromRGB(255,255,255), Font = Enum.Font.GothamBold, TextSize = 13, TextStrokeTransparency = 0, Parent = ESPFolder })
+    local distLabel = Create("TextLabel", { Name = "DistLabel", BackgroundTransparency = 1, TextColor3 = Color3.fromRGB(220,220,220), Font = Enum.Font.Gotham, TextSize = 12, TextStrokeTransparency = 0, Parent = ESPFolder })
+    local tracer = Create("Frame", { Name = "Tracer", BackgroundColor3 = ESPConfig.TracerColor, BorderSizePixel = 0, Visible = false, Parent = ESPFolder })
+    ESPObjects[plr] = { Box = box, HealthBG = healthBg, HealthFill = healthFill, Name = nameLabel, Dist = distLabel, Tracer = tracer }
+end
+
+local function removeESPForPlayer(plr)
+    local o = ESPObjects[plr]
+    if o then
+        for _, v in pairs(o) do pcall(function() v:Destroy() end) end
+        ESPObjects[plr] = nil
+    end
+end
+
+local function isSameTeam(plr)
+    if not ESPConfig.TeamCheck then return false end
+    return plr.Team == LocalPlayer.Team and plr.Team ~= nil
+end
+
+local function updateESPForPlayer(plr)
+    local obj = ESPObjects[plr]
+    if not obj then return end
+    local char = plr.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+
+    if not ESPConfig.Enabled or not char or not hum or not hrp or hum.Health <= 0 or isSameTeam(plr) then
+        obj.Box.Visible = false; obj.HealthBG.Visible = false
+        obj.Name.Visible = false; obj.Dist.Visible = false; obj.Tracer.Visible = false
+        return
+    end
+
+    local dist = (Camera.CFrame.Position - hrp.Position).Magnitude
+    if dist > ESPConfig.MaxDistance then
+        obj.Box.Visible = false; obj.HealthBG.Visible = false
+        obj.Name.Visible = false; obj.Dist.Visible = false; obj.Tracer.Visible = false
+        return
+    end
+
+    local cf, size = char:GetBoundingBox()
+    local topWorld = cf * CFrame.new(0, size.Y/2, 0)
+    local bottomWorld = cf * CFrame.new(0, -size.Y/2, 0)
+
+    local topScreen, onTop = Camera:WorldToViewportPoint(topWorld.Position)
+    local bottomScreen, onBottom = Camera:WorldToViewportPoint(bottomWorld.Position)
+    if not (onTop and onBottom) then
+        obj.Box.Visible = false; obj.HealthBG.Visible = false
+        obj.Name.Visible = false; obj.Dist.Visible = false; obj.Tracer.Visible = false
+        return
+    end
+
+    local heightPx = math.abs(bottomScreen.Y - topScreen.Y)
+    local widthPx = heightPx * 0.55
+    local x = topScreen.X - widthPx / 2
+    local y = topScreen.Y
+
+    if ESPConfig.ShowBox then
+        obj.Box.Visible = true
+        obj.Box.Position = UDim2.fromOffset(x, y)
+        obj.Box.Size = UDim2.fromOffset(widthPx, heightPx)
+        obj.Box.UIStroke.Color = ESPConfig.TeamColor and (plr.TeamColor and plr.TeamColor.Color or ESPConfig.BoxColor) or ESPConfig.BoxColor
+    else obj.Box.Visible = false end
+
+    if ESPConfig.ShowHealth then
+        obj.HealthBG.Visible = true
+        obj.HealthBG.Position = UDim2.fromOffset(x - 6, y)
+        obj.HealthBG.Size = UDim2.fromOffset(4, heightPx)
+        local ratio = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
+        obj.HealthFill.Size = UDim2.new(1, 0, ratio, 0)
+        obj.HealthFill.Position = UDim2.new(0, 0, 1 - ratio, 0)
+        obj.HealthFill.BackgroundColor3 = Color3.fromRGB(255,0,0):Lerp(Color3.fromRGB(0,255,0), ratio)
+    else obj.HealthBG.Visible = false end
+
+    if ESPConfig.ShowName then
+        obj.Name.Visible = true
+        obj.Name.Text = plr.Name .. " [" .. math.floor(hum.Health) .. "]"
+        obj.Name.Position = UDim2.fromOffset(x - 20, y - 18)
+        obj.Name.Size = UDim2.fromOffset(widthPx + 40, 16)
+    else obj.Name.Visible = false end
+
+    if ESPConfig.ShowDistance then
+        obj.Dist.Visible = true
+        obj.Dist.Text = math.floor(dist) .. "m"
+        obj.Dist.Position = UDim2.fromOffset(x - 20, y + heightPx + 2)
+        obj.Dist.Size = UDim2.fromOffset(widthPx + 40, 14)
+    else obj.Dist.Visible = false end
+
+    if ESPConfig.ShowTracer then
+        obj.Tracer.Visible = true
+        local origin = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y)
+        local target = Vector2.new(x + widthPx/2, y + heightPx)
+        local delta = target - origin
+        local len = delta.Magnitude
+        local mid = origin + delta/2
+        local angle = math.deg(math.atan2(delta.Y, delta.X))
+        obj.Tracer.Position = UDim2.fromOffset(mid.X, mid.Y)
+        obj.Tracer.Size = UDim2.fromOffset(len, 1)
+        obj.Tracer.Rotation = angle
+    else obj.Tracer.Visible = false end
+end
+
+-- ============================================================
+-- AIMBOT PRO v2.1.1 — Mobile-Fixed
+-- ============================================================
+local AimbotConfig = {
+    Enabled = false,
+    Keybind = Enum.KeyCode.E,
+    FOV = 200,
+    Smoothness = 0.35,
+    MaxDistance = 500,
+    TeamCheck = true,
+    WallCheck = true,
+    Prediction = true,
+    TargetPart = "Head",
+    AutoShoot = false,
+    ShowFOVCircle = true,
+    FOVColor = Color3.fromRGB(255, 255, 255),
+
+    Sticky = true,
+    ForceShiftLock = true,
+    UseMouseMove = not isMobile,
+    MobileMode = isMobile,
+    AimFOVDegree = isMobile and 60 or 25,  -- ✅ mobile = FOV muito maior
+    MobileSearchByScreen = true,            -- ✅ mobile busca por posição na tela
+}
+
+local aiming = false
+local fovCircle
+local stickyTarget = nil
+local stickyTime = 0
+local bindedName = "AimbotPRO_v211"
+local savedCameraType = nil
+
+-- ✅ NOVO: salvar/restaurar CameraType (CRUCIAL pro mobile)
+local function saveCameraState()
+    if not savedCameraType then
+        savedCameraType = Camera.CameraType
+    end
+end
+
+local function restoreCameraState()
+    if savedCameraType then
+        pcall(function() Camera.CameraType = savedCameraType end)
+        savedCameraType = nil
+    end
+end
+
+local function forceShiftLock(state)
+    if not AimbotConfig.ForceShiftLock then return end
+    if state then
+        pcall(function() UserInput.MouseBehavior = Enum.MouseBehavior.LockCenter end)
+        pcall(function() LocalPlayer.DevEnableMouseLock = true end)
+        saveCameraState()
+        pcall(function() Camera.CameraType = Enum.CameraType.Scriptable end)
+    else
+        pcall(function() UserInput.MouseBehavior = Enum.MouseBehavior.Default end)
+        restoreCameraState()
+    end
+end
+
+local function getTargetPart(char, partName)
+    if partName == "Nearest" then
+        local closest, bestDist = nil, math.huge
+        local camPos = Camera.CFrame.Position
+        for _, part in ipairs(char:GetChildren()) do
+            if part:IsA("BasePart") then
+                local d = (part.Position - camPos).Magnitude
+                if d < bestDist then bestDist = d; closest = part end
+            end
+        end
+        return closest
+    end
+    return char:FindFirstChild(partName) or char:FindFirstChild("HumanoidRootPart")
+end
+
+local function isVisible(part)
+    if not AimbotConfig.WallCheck then return true end
+    local origin = Camera.CFrame.Position
+    local dir = part.Position - origin
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = { LocalPlayer.Character, Camera }
+    local result = workspace:Raycast(origin, dir, params)
+    return result == nil or result.Instance:IsDescendantOf(part.Parent)
+end
+
+local function angleToTarget(part)
+    local camPos = Camera.CFrame.Position
+    local lookDir = Camera.CFrame.LookVector
+    local dirTo = (part.Position - camPos).Unit
+    local dot = math.clamp(lookDir:Dot(dirTo), -1, 1)
+    return math.deg(math.acos(dot))
+end
+
+local function isValidTarget(tbl)
+    if not tbl then return false end
+    local plr, part = tbl.plr, tbl.part
+    if not plr or not part or not part.Parent then return false end
+    local char = plr.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
+    if AimbotConfig.TeamCheck and plr.Team == LocalPlayer.Team and plr.Team ~= nil then return false end
+    local dist = (part.Position - Camera.CFrame.Position).Magnitude
+    if dist > AimbotConfig.MaxDistance then return false end
+    if not isVisible(part) then return false end
+    return true
+end
+
+-- ✅ NOVO: busca do alvo (2 modos: por ângulo 3D OU por posição na tela)
+local function getClosestToCursor()
+    if AimbotConfig.Sticky and stickyTarget and isValidTarget(stickyTarget) then
+        stickyTime = stickyTime + 1
+        if stickyTime < 120 then return stickyTarget end
+    end
+
+    local best, bestScore = nil, math.huge
+    local center = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+    local maxScreen = AimbotConfig.FOV / 2
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer then
+            local char = plr.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if char and hum and hum.Health > 0 then
+                if not (AimbotConfig.TeamCheck and plr.Team == LocalPlayer.Team and plr.Team ~= nil) then
+                    local part = getTargetPart(char, AimbotConfig.TargetPart)
+                    if part then
+                        local dist3D = (part.Position - Camera.CFrame.Position).Magnitude
+                        if dist3D <= AimbotConfig.MaxDistance and isVisible(part) then
+                            -- ✅ MODO MOBILE: por tela
+                            if AimbotConfig.MobileSearchByScreen and isMobile then
+                                local screenPos, onScreen = Camera:WorldToViewportPoint(part.Position)
+                                if onScreen and screenPos.Z > 0 then
+                                    local d = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
+                                    if d < maxScreen and d < bestScore then
+                                        bestScore = d
+                                        best = { plr = plr, part = part }
+                                    end
+                                end
+                            else
+                                -- MODO ÂNGULO 3D (PC)
+                                local ang = angleToTarget(part)
+                                if ang <= AimbotConfig.AimFOVDegree and ang < bestScore then
+                                    bestScore = ang
+                                    best = { plr = plr, part = part }
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    if best then
+        stickyTarget = best
+        stickyTime = 0
+    end
+    return best
+end
+
+local function predictPosition(part)
+    local pos = part.Position
+    if not AimbotConfig.Prediction then return pos end
+    local vel = part.AssemblyLinearVelocity
+    if vel.Magnitude < 1 then return pos end
+    local dist = (pos - Camera.CFrame.Position).Magnitude
+    local bulletSpeed = 600
+    return pos + vel * (dist / bulletSpeed)
+end
+
+-- ✅ Mira via CFrame direto (funciona no mobile)
+local function applyAim(target)
+    if not target or not target.part then return end
+    local aimPos = predictPosition(target.part)
+    local camPos = Camera.CFrame.Position
+    local targetCF = CFrame.new(camPos, aimPos)
+    local alpha = math.clamp(AimbotConfig.Smoothness, 0.01, 1)
+    pcall(function() Camera.CFrame = Camera.CFrame:Lerp(targetCF, alpha) end)
+end
+
+-- ✅ Mira via mousemoverel (PC)
+local function applyAimMouse(target)
+    if not target or not target.part then return end
+    local aimPos = predictPosition(target.part)
+    local camPos = Camera.CFrame.Position
+    local targetCF = CFrame.new(camPos, aimPos)
+    local deltaCF = Camera.CFrame:ToObjectSpace(targetCF)
+    local _, _, _, _, _, _, _, m22, m23, _, m32, m33 = deltaCF:GetComponents()
+    local yaw = math.atan2(-m32, m33)
+    local pitch = math.asin(math.clamp(m23, -1, 1))
+    local alpha = math.clamp(AimbotConfig.Smoothness, 0.01, 1)
+    if mousemoverel then
+        pcall(function() mousemoverel(math.deg(yaw) * alpha * 0.5, math.deg(pitch) * alpha * 0.5) end)
+    end
+end
+
+local function aimbotStep()
+    -- ✅ FOV circle: no mobile fica no CENTRO, no PC segue o mouse
+    if fovCircle then
+        if AimbotConfig.ShowFOVCircle then
+            fovCircle.Visible = true
+            local size = AimbotConfig.FOV
+            local mp
+            if isMobile then
+                mp = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+            else
+                mp = UserInput:GetMouseLocation()
+            end
+            fovCircle.Position = UDim2.fromOffset(mp.X - size/2, mp.Y - size/2)
+            fovCircle.Size = UDim2.fromOffset(size, size)
+            fovCircle.UIStroke.Color = AimbotConfig.FOVColor
+        else
+            fovCircle.Visible = false
+        end
+    end
+
+    if not AimbotConfig.Enabled or not aiming then return end
+
+    local target = getClosestToCursor()
+    if not target then return end
+
+    if AimbotConfig.MobileMode and isMobile then
+        applyAim(target)
+    elseif AimbotConfig.UseMouseMove and mousemoverel then
+        applyAimMouse(target)
+    else
+        applyAim(target)
+    end
+
+    if AimbotConfig.AutoShoot then
+        pcall(function()
+            if mouse1click then mouse1click() end
+            if isMobile and VirtualUser then VirtualUser:ClickButton1(Vector2.new()) end
+        end)
+    end
+end
+
+pcall(function() RunService:UnbindFromRenderStep(bindedName) end)
+RunService:BindToRenderStep(bindedName, Enum.RenderPriority.Camera.Value + 1, aimbotStep)
+
+-- ============================================================
+-- GUI
+-- ============================================================
+local function CreateGUI()
+    local screenGui = Create("ScreenGui", {
+        Name = "GFXOptimizerV211",
+        ResetOnSpawn = false,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+        DisplayOrder = 999,
+        IgnoreGuiInset = true
+    })
+    if hasGethui then pcall(function() screenGui.Parent = gethui() end)
+    else screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui") end
+
+    ESPFolder = Create("Frame", { Name = "ESPLayer", Size = UDim2.new(1,0,1,0), BackgroundTransparency = 1, Parent = screenGui })
+
+    -- ✅ FOV circle refeito como anel (não depende de asset externo)
+    fovCircle = Create("Frame", {
+        Name = "FOVCircle", BackgroundTransparency = 1, BorderSizePixel = 0,
+        Visible = false, Parent = screenGui
+    })
+    Create("UIStroke", { Thickness = 2, Color = AimbotConfig.FOVColor, Transparency = 0.2, Parent = fovCircle })
+    Create("UICorner", { CornerRadius = UDim.new(1, 0), Parent = fovCircle })
+
+    local toggleBtn = Create("TextButton", {
+        Name = "Toggle", Size = UDim2.new(0, 50, 0, 50),
+        Position = UDim2.new(1, -70, 0, 20),
+        BackgroundColor3 = Theme.Primary, Text = "⚡",
+        TextColor3 = Theme.Text, Font = Enum.Font.GothamBold, TextSize = 24,
+        AutoButtonColor = false, BorderSizePixel = 0, Parent = screenGui
+    })
+    Create("UICorner", { CornerRadius = UDim.new(0, 12), Parent = toggleBtn })
+    Create("UIStroke", { Color = Theme.PrimaryDark, Thickness = 2, Transparency = 0.5, Parent = toggleBtn })
+
+    local panel = Create("Frame", {
+        Name = "Panel", Size = UDim2.new(0, 420, 0, 540),
+        Position = UDim2.new(0.5, -210, 0.5, -270),
+        BackgroundColor3 = Theme.Background, BorderSizePixel = 0,
+        Visible = false, Parent = screenGui
+    })
+    Create("UICorner", { CornerRadius = UDim.new(0, 16), Parent = panel })
+    Create("UIStroke", { Color = Theme.Border, Thickness = 2, Transparency = 0.3, Parent = panel })
+
+    local header = Create("Frame", { Size = UDim2.new(1,0,0,55), BackgroundColor3 = Theme.Surface, BorderSizePixel = 0, Parent = panel })
+    Create("UICorner", { CornerRadius = UDim.new(0, 16), Parent = header })
+    Create("Frame", { Size = UDim2.new(1,0,0,16), Position = UDim2.new(0,0,1,-16), BackgroundColor3 = Theme.Surface, BorderSizePixel = 0, Parent = header })
+    Create("TextLabel", { Size = UDim2.new(1,-60,1,0), Position = UDim2.new(0,20,0,0), BackgroundTransparency = 1, Text = "⚡ GFX OPTIMIZER v2.1.1", TextColor3 = Theme.Text, Font = Enum.Font.GothamBold, TextSize = 18, TextXAlignment = Enum.TextXAlignment.Left, Parent = header })
+
+    local closeBtn = Create("TextButton", { Size = UDim2.new(0,36,0,36), Position = UDim2.new(1,-46,0.5,-18), BackgroundColor3 = Theme.Danger, Text = "✕", TextColor3 = Theme.Text, Font = Enum.Font.GothamBold, TextSize = 16, AutoButtonColor = false, BorderSizePixel = 0, Parent = header })
+    Create("UICorner", { CornerRadius = UDim.new(0, 10), Parent = closeBtn })
+
+    local tabBar = Create("Frame", { Size = UDim2.new(1,-20,0,38), Position = UDim2.new(0,10,0,62), BackgroundTransparency = 1, Parent = panel })
+    Create("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0,6), SortOrder = Enum.SortOrder.LayoutOrder, Parent = tabBar })
+
+    local contentHolder = Create("Frame", { Size = UDim2.new(1,-20,1,-110), Position = UDim2.new(0,10,0,105), BackgroundTransparency = 1, Parent = panel })
+
+    local tabs = {}
+    local function createTab(name, order)
+        local btn = Create("TextButton", { Size = UDim2.new(0.25,-5,1,0), BackgroundColor3 = Theme.Surface, Text = name, TextColor3 = Theme.TextDim, Font = Enum.Font.GothamBold, TextSize = 12, AutoButtonColor = false, BorderSizePixel = 0, LayoutOrder = order, Parent = tabBar })
+        Create("UICorner", { CornerRadius = UDim.new(0, 8), Parent = btn })
+        local frame = Create("ScrollingFrame", { Size = UDim2.new(1,0,1,0), BackgroundTransparency = 1, ScrollBarThickness = 4, ScrollBarImageColor3 = Theme.Primary, CanvasSize = UDim2.new(0,0,0,0), AutomaticCanvasSize = Enum.AutomaticSize.Y, Visible = false, Parent = contentHolder })
+        Create("UIListLayout", { Padding = UDim.new(0,8), SortOrder = Enum.SortOrder.LayoutOrder, Parent = frame })
+        Create("UIPadding", { PaddingTop = UDim.new(0,4), PaddingBottom = UDim.new(0,20), Parent = frame })
+        tabs[name] = { btn = btn, frame = frame }
+        btn.MouseButton1Click:Connect(function()
+            for _, t in pairs(tabs) do
+                t.frame.Visible = false
+                t.btn.BackgroundColor3 = Theme.Surface
+                t.btn.TextColor3 = Theme.TextDim
+            end
+            frame.Visible = true
+            btn.BackgroundColor3 = Theme.Primary
+            btn.TextColor3 = Theme.Text
+        end)
+    end
+
+    createTab("OTIMIZAR", 1); createTab("ESP", 2); createTab("AIMBOT", 3); createTab("INFO", 4)
+
+    local function Section(text, order, parent)
+        local sec = Create("Frame", { Size = UDim2.new(1,0,0,26), BackgroundTransparency = 1, LayoutOrder = order, Parent = parent })
+        Create("TextLabel", { Size = UDim2.new(1,0,1,0), BackgroundTransparency = 1, Text = string.upper(text), TextColor3 = Theme.Primary, Font = Enum.Font.GothamBold, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left, Parent = sec })
+        return sec
+    end
+
+    local function Toggle(text, default, order, parent, callback)
+        local container = Create("Frame", { Size = UDim2.new(1,0,0,42), BackgroundColor3 = Theme.Surface, BorderSizePixel = 0, LayoutOrder = order, Parent = parent })
+        Create("UICorner", { CornerRadius = UDim.new(0, 10), Parent = container })
+        Create("TextLabel", { Size = UDim2.new(1,-70,1,0), Position = UDim2.new(0,15,0,0), BackgroundTransparency = 1, Text = text, TextColor3 = Theme.Text, Font = Enum.Font.Gotham, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left, Parent = container })
+        local toggle = Create("TextButton", { Size = UDim2.new(0,44,0,24), Position = UDim2.new(1,-54,0.5,-12), BackgroundColor3 = default and Theme.Success or Theme.TextDim, Text = "", AutoButtonColor = false, BorderSizePixel = 0, Parent = container })
+        Create("UICorner", { CornerRadius = UDim.new(1, 0), Parent = toggle })
+        local knob = Create("Frame", { Size = UDim2.new(0,20,0,20), Position = default and UDim2.new(1,-22,0.5,-10) or UDim2.new(0,2,0.5,-10), BackgroundColor3 = Color3.fromRGB(255,255,255), BorderSizePixel = 0, Parent = toggle })
+        Create("UICorner", { CornerRadius = UDim.new(1, 0), Parent = knob })
+        local isOn = default
+        toggle.MouseButton1Click:Connect(function()
+            isOn = not isOn
+            Tween(toggle, TweenInfo.new(0.15), { BackgroundColor3 = isOn and Theme.Success or Theme.TextDim })
+            Tween(knob, TweenInfo.new(0.15), { Position = isOn and UDim2.new(1,-22,0.5,-10) or UDim2.new(0,2,0.5,-10) })
+            if callback then callback(isOn) end
+        end)
+        return isOn
+    end
+
+    local function Button(text, color, order, parent, callback)
+        local btn = Create("TextButton", { Size = UDim2.new(1,0,0,42), BackgroundColor3 = color, Text = text, TextColor3 = Theme.Text, Font = Enum.Font.GothamBold, TextSize = 13, AutoButtonColor = false, BorderSizePixel = 0, LayoutOrder = order, Parent = parent })
+        Create("UICorner", { CornerRadius = UDim.new(0, 10), Parent = btn })
+        btn.MouseEnter:Connect(function() Tween(btn, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(math.floor(color.R*200), math.floor(color.G*200), math.floor(color.B*200)) }) end)
+        btn.MouseLeave:Connect(function() Tween(btn, TweenInfo.new(0.15), { BackgroundColor3 = color }) end)
+        btn.MouseButton1Click:Connect(function() if callback then callback() end end)
+        return btn
+    end
+
+    -- ✅ SLIDER CORRIGIDO COM SUPORTE MOBILE
+    local function Slider(text, min, max, default, order, parent, callback)
+        local container = Create("Frame", { Size = UDim2.new(1,0,0,60), BackgroundColor3 = Theme.Surface, BorderSizePixel = 0, LayoutOrder = order, Parent = parent })
+        Create("UICorner", { CornerRadius = UDim.new(0, 10), Parent = container })
+        local label = Create("TextLabel", { Size = UDim2.new(1,-20,0,20), Position = UDim2.new(0,15,0,6), BackgroundTransparency = 1, Text = text .. ": " .. tostring(default), TextColor3 = Theme.Text, Font = Enum.Font.Gotham, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left, Parent = container })
+        local track = Create("Frame", { Size = UDim2.new(1,-30,0,6), Position = UDim2.new(0,15,0,36), BackgroundColor3 = Theme.SurfaceLight, BorderSizePixel = 0, Parent = container })
+        Create("UICorner", { CornerRadius = UDim.new(1, 0), Parent = track })
+        local fill = Create("Frame", { Size = UDim2.new((default-min)/(max-min),0,1,0), BackgroundColor3 = Theme.Primary, BorderSizePixel = 0, Parent = track })
+        Create("UICorner", { CornerRadius = UDim.new(1, 0), Parent = fill })
+        local knob = Create("Frame", { Size = UDim2.new(0,14,0,14), Position = UDim2.new((default-min)/(max-min),-7,0.5,-7), BackgroundColor3 = Theme.Text, BorderSizePixel = 0, Parent = track })
+        Create("UICorner", { CornerRadius = UDim.new(1, 0), Parent = knob })
+
+        -- ✅ Detecção de input unificada (mouse + touch)
+        local dragging = false
+        local function updateFromInput(input)
+            local trackAbs = track.AbsolutePosition.X
+            local trackW = math.max(track.AbsoluteSize.X, 1)
+            local rel = math.clamp((input.Position.X - trackAbs) / trackW, 0, 1)
+            local value = math.floor(min + (max - min) * rel + 0.5)
+            fill.Size = UDim2.new(rel, 0, 1, 0)
+            knob.Position = UDim2.new(rel, -7, 0.5, -7)
+            label.Text = text .. ": " .. tostring(value)
+            if callback then callback(value) end
+        end
+
+        track.InputBegan:Connect(function(input)
+            if isPress(input) then
+                dragging = true
+                updateFromInput(input)
+            end
+        end)
+
+        -- ✅ InputChanged global capta touch move
+        UserInput.InputChanged:Connect(function(input)
+            if dragging and isMove(input) then
+                updateFromInput(input)
+            end
+        end)
+
+        UserInput.InputEnded:Connect(function(input)
+            if isPress(input) then dragging = false end
+        end)
+
+        -- ✅ Fallback: clicar/toque no container inteiro também move
+        container.InputBegan:Connect(function(input)
+            if isPress(input) then
+                dragging = true
+                updateFromInput(input)
+            end
+        end)
+    end
+
+    -- =========================== TAB OTIMIZAR
+    local optTab = tabs["OTIMIZAR"].frame
+    Section("Perfis de Otimização", 1, optTab)
+
+    local profileDesc = {
+        Leve = "• Remove só o essencial\n• Mantém qualidade visual",
+        Equilibrado = "• Remove grama, sombras, skybox, atmosphere\n• Preserva física",
+        Agressivo = "• Remove texturas, SurfaceAppearance, acessórios\n• Máximo FPS"
+    }
+    local profileIndicators = {}
+    local currentProfile = "Equilibrado"
+
+    for i, p in ipairs({"Leve", "Equilibrado", "Agressivo"}) do
+        local btn = Create("TextButton", { Size = UDim2.new(1,0,0,58), BackgroundColor3 = Theme.Surface, Text = "", AutoButtonColor = false, BorderSizePixel = 0, LayoutOrder = 10+i, Parent = optTab })
+        Create("UICorner", { CornerRadius = UDim.new(0, 10), Parent = btn })
+        Create("UIStroke", { Color = Theme.Border, Thickness = 1, Transparency = 0.5, Parent = btn })
+        Create("TextLabel", { Size = UDim2.new(1,-40,0,20), Position = UDim2.new(0,15,0,6), BackgroundTransparency = 1, Text = p, TextColor3 = Theme.Text, Font = Enum.Font.GothamBold, TextSize = 14, TextXAlignment = Enum.TextXAlignment.Left, Parent = btn })
+        Create("TextLabel", { Size = UDim2.new(1,-40,0,30), Position = UDim2.new(0,15,0,24), BackgroundTransparency = 1, Text = profileDesc[p], TextColor3 = Theme.TextDim, Font = Enum.Font.Gotham, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, Parent = btn })
+        local ind = Create("Frame", { Size = UDim2.new(0,10,0,10), Position = UDim2.new(1,-25,0.5,-5), BackgroundColor3 = Theme.TextDim, BorderSizePixel = 0, Parent = btn })
+        Create("UICorner", { CornerRadius = UDim.new(1, 0), Parent = ind })
+        profileIndicators[p] = ind
+        btn.MouseButton1Click:Connect(function()
+            ApplyProfile(p)
+            currentProfile = p
+            for n, indicator in pairs(profileIndicators) do
+                Tween(indicator, TweenInfo.new(0.2), { BackgroundColor3 = (n == p) and Theme.Success or Theme.TextDim })
+            end
+        end)
+        btn.MouseEnter:Connect(function() Tween(btn, TweenInfo.new(0.15), { BackgroundColor3 = Theme.SurfaceLight }) end)
+        btn.MouseLeave:Connect(function() Tween(btn, TweenInfo.new(0.15), { BackgroundColor3 = Theme.Surface }) end)
+    end
+
+    Section("Ações Rápidas", 20, optTab)
+    Button("🔄 Restaurar Tudo", Theme.Danger, 21, optTab, function()
+        RestoreBackup()
+        for _, ind in pairs(profileIndicators) do
+            Tween(ind, TweenInfo.new(0.2), { BackgroundColor3 = Theme.TextDim })
+        end
+    end)
+    Button("🚀 Otimização Contínua", Theme.Success, 22, optTab, function()
+        StartContinuousOptimization(currentProfile)
+    end)
+
+    Section("Remoção Específica", 30, optTab)
+    Toggle("Ocultar Grama / Foliagem", false, 31, optTab, function(on) pcall(function() workspace.Terrain.Decoration = not on end) end)
+    Toggle("Ocultar Skybox / Atmosphere / Clouds", false, 32, optTab, function(on)
+        for _, obj in ipairs(Lighting:GetChildren()) do
+            if obj:IsA("Sky") or obj:IsA("Atmosphere") or obj:IsA("Clouds") then
+                if on then
+                    if not hiddenCache[obj] then hiddenCache[obj] = { Parent = obj.Parent } end
+                    obj.Parent = nil
+                else
+                    if hiddenCache[obj] then obj.Parent = Lighting; hiddenCache[obj] = nil end
+                end
+            end
+        end
+    end)
+    Toggle("Ocultar Decals & Texturas", false, 33, optTab, function(on)
+        if on then DisableEffects("Decal"); DisableEffects("Texture")
+        else RestoreEffects("Decal"); RestoreEffects("Texture") end
+    end)
+    Toggle("Ocultar SurfaceAppearance (PBR)", false, 34, optTab, function(on)
+        if on then HideSurfaceAppearance()
+        else
+            for inst, data in pairs(hiddenCache) do
+                if inst:IsA("SurfaceAppearance") and data.Parent then
+                    inst.Parent = data.Parent
+                    hiddenCache[inst] = nil
+                end
+            end
+        end
+    end)
+    Toggle("Ocultar Partículas", false, 35, optTab, function(on)
+        if on then DisableEffects("ParticleEmitter") else RestoreEffects("ParticleEmitter") end
+    end)
+    Toggle("Ocultar Trails & Beams", false, 36, optTab, function(on)
+        if on then DisableEffects("Trail"); DisableEffects("Beam")
+        else RestoreEffects("Trail"); RestoreEffects("Beam") end
+    end)
+    Toggle("Ocultar Sombras", false, 37, optTab, function(on)
+        Lighting.GlobalShadows = not on
+        if on then Lighting.ShadowSoftness = 0 end
+    end)
+    Toggle("Ocultar Acessórios (chapéus/cabelo)", false, 38, optTab, function(on)
+        if on then HideAccessories() end
+    end)
+
+    -- =========================== TAB ESP
+    local espTab = tabs["ESP"].frame
+    Section("ESP — Wallhack", 1, espTab)
+    Toggle("Ativar ESP", false, 2, espTab, function(on) ESPConfig.Enabled = on end)
+    Toggle("Mostrar Box", true, 3, espTab, function(on) ESPConfig.ShowBox = on end)
+    Toggle("Barra de Vida", true, 4, espTab, function(on) ESPConfig.ShowHealth = on end)
+    Toggle("Nome + Vida", true, 5, espTab, function(on) ESPConfig.ShowName = on end)
+    Toggle("Distância", true, 6, espTab, function(on) ESPConfig.ShowDistance = on end)
+    Toggle("Tracer", false, 7, espTab, function(on) ESPConfig.ShowTracer = on end)
+    Toggle("Checar Time", true, 8, espTab, function(on) ESPConfig.TeamCheck = on end)
+    Toggle("Cor por Time", true, 9, espTab, function(on) ESPConfig.TeamColor = on end)
+    Slider("Distância Máxima (m)", 100, 5000, 1500, 10, espTab, function(v) ESPConfig.MaxDistance = v end)
+
+    -- =========================== TAB AIMBOT
+    local aimTab = tabs["AIMBOT"].frame
+    Section("Aimbot v2.1.1", 1, aimTab)
+
+    Toggle("Ativar Aimbot", false, 2, aimTab, function(on) AimbotConfig.Enabled = on end)
+    Toggle("Mostrar Círculo FOV", true, 3, aimTab, function(on) AimbotConfig.ShowFOVCircle = on end)
+    Toggle("Checar Time", true, 4, aimTab, function(on) AimbotConfig.TeamCheck = on end)
+    Toggle("Checar Parede", true, 5, aimTab, function(on) AimbotConfig.WallCheck = on end)
+    Toggle("Predição de Movimento", true, 6, aimTab, function(on) AimbotConfig.Prediction = on end)
+    Toggle("Auto Atirar", false, 7, aimTab, function(on) AimbotConfig.AutoShoot = on end)
+    Toggle("Sticky (gruda no alvo)", true, 8, aimTab, function(on) AimbotConfig.Sticky = on end)
+    Toggle("Forçar Câmera Scriptable", true, 9, aimTab, function(on) AimbotConfig.ForceShiftLock = on end)
+    Toggle("Modo Mobile (busca por tela)", isMobile, 10, aimTab, function(on)
+        AimbotConfig.MobileMode = on
+        AimbotConfig.MobileSearchByScreen = on
+    end)
+
+    Slider("FOV Visual (px do círculo)", 80, 600, isMobile and 200 or 120, 11, aimTab, function(v) AimbotConfig.FOV = v end)
+    Slider("FOV de Mira (graus 3D)", 5, 180, isMobile and 60 or 25, 12, aimTab, function(v) AimbotConfig.AimFOVDegree = v end)
+    Slider("Suavidade (0-100)", 1, 100, 35, 13, aimTab, function(v) AimbotConfig.Smoothness = v / 100 end)
+    Slider("Distância Máxima", 50, 2000, 500, 14, aimTab, function(v) AimbotConfig.MaxDistance = v end)
+
+    Section("Parte Alvo", 20, aimTab)
+    for i, part in ipairs({"Head", "HumanoidRootPart", "UpperTorso", "Nearest"}) do
+        local isDefault = (part == "Head")
+        Button("🎯 " .. part, isDefault and Theme.Primary or Theme.Surface, 20+i, aimTab, function()
+            AimbotConfig.TargetPart = part
+        end)
+    end
+
+    Section("Keybind", 40, aimTab)
+    Button("🔑 Segurar [E]", Theme.Surface, 41, aimTab, function()
+        AimbotConfig.Keybind = Enum.KeyCode.E
+    end)
+    Button("🔑 Segurar [Q]", Theme.Surface, 42, aimTab, function()
+        AimbotConfig.Keybind = Enum.KeyCode.Q
+    end)
+    Button("🔑 Segurar Botão Direito", Theme.Surface, 43, aimTab, function()
+        AimbotConfig.Keybind = "MB2"
+    end)
+
+    -- =========================== TAB INFO
+    local infoTab = tabs["INFO"].frame
+    Section("Métricas", 1, infoTab)
+    local fpsLbl = Create("TextLabel", { Size = UDim2.new(1,0,0,30), BackgroundColor3 = Theme.Surface, Text = "FPS: --", TextColor3 = Theme.Success, Font = Enum.Font.GothamBold, TextSize = 16, LayoutOrder = 2, Parent = infoTab })
+    Create("UICorner", { CornerRadius = UDim.new(0, 8), Parent = fpsLbl })
+    local pingLbl = Create("TextLabel", { Size = UDim2.new(1,0,0,30), BackgroundColor3 = Theme.Surface, Text = "Ping: --", TextColor3 = Theme.Warning, Font = Enum.Font.GothamBold, TextSize = 16, LayoutOrder = 3, Parent = infoTab })
+    Create("UICorner", { CornerRadius = UDim.new(0, 8), Parent = pingLbl })
+    local memLbl = Create("TextLabel", { Size = UDim2.new(1,0,0,30), BackgroundColor3 = Theme.Surface, Text = "Memória: --", TextColor3 = Theme.Text, Font = Enum.Font.GothamBold, TextSize = 16, LayoutOrder = 4, Parent = infoTab })
+    Create("UICorner", { CornerRadius = UDim.new(0, 8), Parent = memLbl })
+    local objLbl = Create("TextLabel", { Size = UDim2.new(1,0,0,30), BackgroundColor3 = Theme.Surface, Text = "Ocultos: 0", TextColor3 = Theme.Text, Font = Enum.Font.GothamBold, TextSize = 16, LayoutOrder = 5, Parent = infoTab })
+    Create("UICorner", { CornerRadius = UDim.new(0, 8), Parent = objLbl })
+
+    task.spawn(function()
+        while screenGui.Parent do
+            local fps = 0
+            if hasGetFPS then pcall(function() fps = math.floor(getfps()) end) end
+            local ping = 0
+            pcall(function() ping = math.floor(Stats.Network.ServerStatsItem["Data Ping"]:GetValue()) end)
+            local mem = 0
+            pcall(function() mem = math.floor(Stats:GetTotalMemoryUsageMb()) end)
+            local hidden = 0
+            for _ in pairs(hiddenCache) do hidden = hidden + 1 end
+            fpsLbl.Text = "FPS: " .. fps
+            pingLbl.Text = "Ping: " .. ping .. "ms"
+            memLbl.Text = "Memória: " .. mem .. "MB"
+            objLbl.Text = "Ocultos: " .. hidden
+            task.wait(0.5)
+        end
+    end)
+
+    -- Painel Toggle
+    local isOpen = false
+    local function TogglePanel()
+        isOpen = not isOpen
+        panel.Visible = isOpen
+        if isOpen then
+            panel.Size = UDim2.new(0, 0, 0, 0)
+            panel.Position = UDim2.new(0.5, 0, 0.5, 0)
+            Tween(panel, TweenInfo.new(0.25, Enum.EasingStyle.Back), {
+                Size = UDim2.new(0, 420, 0, 540),
+                Position = UDim2.new(0.5, -210, 0.5, -270)
+            })
+        end
+    end
+    toggleBtn.MouseButton1Click:Connect(TogglePanel)
+    closeBtn.MouseButton1Click:Connect(TogglePanel)
+    toggleBtn.MouseEnter:Connect(function() Tween(toggleBtn, TweenInfo.new(0.15), { BackgroundColor3 = Theme.PrimaryDark }) end)
+    toggleBtn.MouseLeave:Connect(function() Tween(toggleBtn, TweenInfo.new(0.15), { BackgroundColor3 = Theme.Primary }) end)
+
+    tabs["OTIMIZAR"].btn.BackgroundColor3 = Theme.Primary
+    tabs["OTIMIZAR"].btn.TextColor3 = Theme.Text
+    tabs["OTIMIZAR"].frame.Visible = true
+
+    -- Inputs
+    UserInput.InputBegan:Connect(function(input, gpe)
+        if gpe then return end
+        if input.KeyCode == Enum.KeyCode.RightShift then TogglePanel() end
+        if AimbotConfig.Keybind == input.KeyCode and AimbotConfig.Enabled then
+            aiming = true
+            stickyTarget = nil
+            stickyTime = 0
+            forceShiftLock(true)
+        end
+        if input.UserInputType == Enum.UserInputType.MouseButton2 and AimbotConfig.Keybind == "MB2" and AimbotConfig.Enabled then
+            aiming = true
+            stickyTarget = nil
+            stickyTime = 0
+            forceShiftLock(true)
+        end
+    end)
+    UserInput.InputEnded:Connect(function(input)
+        if AimbotConfig.Keybind == input.KeyCode then
+            aiming = false
+            forceShiftLock(false)
+            stickyTarget = nil
+        end
+        if input.UserInputType == Enum.UserInputType.MouseButton2 and AimbotConfig.Keybind == "MB2" then
+            aiming = false
+            forceShiftLock(false)
+            stickyTarget = nil
+        end
+    end)
+
+    -- ✅ NOVO: botão flutuante separado para AIMBOT no mobile (segurar e mirar)
+    if isMobile then
+        local aimBtn = Create("TextButton", {
+            Name = "AimBtn",
+            Size = UDim2.new(0, 60, 0, 60),
+            Position = UDim2.new(1, -80, 0.6, 0),
+            BackgroundColor3 = Theme.Danger,
+            Text = "🎯",
+            TextColor3 = Theme.Text,
+            Font = Enum.Font.GothamBold,
+            TextSize = 28,
+            AutoButtonColor = false,
+            BorderSizePixel = 0,
+            Parent = screenGui
+        })
+        Create("UICorner", { CornerRadius = UDim.new(1, 0), Parent = aimBtn })
+        Create("UIStroke", { Color = Color3.fromRGB(180, 40, 40), Thickness = 2, Parent = aimBtn })
+
+        aimBtn.InputBegan:Connect(function(input)
+            if isPress(input) then
+                aiming = true
+                stickyTarget = nil
+                stickyTime = 0
+                forceShiftLock(true)
+            end
+        end)
+        aimBtn.InputEnded:Connect(function(input)
+            if isPress(input) then
+                aiming = false
+                forceShiftLock(false)
+                stickyTarget = nil
+            end
+        end)
+    end
+
+    return screenGui, panel
+end
+
+-- ============================================================
+-- INICIALIZAÇÃO
+-- ============================================================
+local gui, panel = CreateGUI()
+
+for _, plr in ipairs(Players:GetPlayers()) do createESPForPlayer(plr) end
+Players.PlayerAdded:Connect(createESPForPlayer)
+Players.PlayerRemoving:Connect(removeESPForPlayer)
+
+RunService.RenderStepped:Connect(function()
+    for plr in pairs(ESPObjects) do
+        pcall(updateESPForPlayer, plr)
+    end
+end)
+
+task.wait(0.7)
+ApplyProfile("Equilibrado")
+
+print("═══════════════════════════════════════")
+print("  ✅ GFX OPTIMIZER v2.1.1 CARREGADO!")
+print("  • RightShift = Painel")
+print("  • [E] segurar = Aimbot (PC)")
+print("  • 🎯 botão vermelho = Aimbot (Mobile)")
+print("═══════════════════════════════════════")
